@@ -15,6 +15,14 @@ class _ConfigEntryAuthFailed(Exception):
     """Stub for homeassistant.exceptions.ConfigEntryAuthFailed."""
 
 
+class _ConfigEntryNotReady(Exception):
+    """Stub for homeassistant.exceptions.ConfigEntryNotReady."""
+
+
+class _HomeAssistantError(Exception):
+    """Stub for homeassistant.exceptions.HomeAssistantError."""
+
+
 # Minimal DataUpdateCoordinator stub — just enough for our coordinator to
 # inherit from it and have __init__ set the attributes we rely on.
 class _DataUpdateCoordinator:
@@ -44,6 +52,8 @@ _HA_MODULES = [
     "homeassistant.helpers.aiohttp_client",
     "homeassistant.helpers.entity_platform",
     "homeassistant.helpers.update_coordinator",
+    "homeassistant.util",
+    "homeassistant.util.dt",
 ]
 for _mod in _HA_MODULES:
     sys.modules.setdefault(_mod, MagicMock())
@@ -81,6 +91,8 @@ sys.modules["homeassistant.helpers.update_coordinator"].CoordinatorEntity = (
 )
 sys.modules["homeassistant.helpers.update_coordinator"].UpdateFailed = _UpdateFailed
 sys.modules["homeassistant.exceptions"].ConfigEntryAuthFailed = _ConfigEntryAuthFailed
+sys.modules["homeassistant.exceptions"].ConfigEntryNotReady = _ConfigEntryNotReady
+sys.modules["homeassistant.exceptions"].HomeAssistantError = _HomeAssistantError
 
 # Entity base classes
 sys.modules["homeassistant.components.binary_sensor"].BinarySensorEntity = (

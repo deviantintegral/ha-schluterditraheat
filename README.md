@@ -47,6 +47,14 @@ Each thermostat creates the following entities, grouped under a single device:
 | Heating Output | Sensor | Current heating output percentage (0–100%) |
 | GFCI Status | Binary Sensor | Ground fault detection (problem device class) |
 
+## Polling and rate limits
+
+The thermostat's cloud backend enforces request limits and publishes its remaining budget in `X-RateLimit-*` response headers on every call. This integration:
+
+- Polls every **300 seconds** by default, the minimum cadence the backend's OEM (Sinopé) asks integrators to respect. (Static data such as device lists is refreshed roughly hourly; the fast path only fetches thermostat state.)
+- Reads the rate-limit headers on every response and **defers the next poll** automatically when the remaining budget runs low, resuming normal cadence once it recovers.
+- Recognizes the backend's JSON error codes (which it returns instead of HTTP 429): a daily-cap hit (`ACCDAYREQMAX`) pauses polling until midnight, an expired session (`USRSESSEXP`) re-authenticates transparently, and login/session limits are surfaced clearly.
+
 ## Limitations
 
 This integration supports monitoring and basic control. The following are **not** currently supported:
