@@ -12,6 +12,8 @@ Tested with the **DITRA-HEAT-E-RS1** thermostat. Other models using the same clo
 
 - **Climate entity** — control temperature and mode (Auto, Heat/Manual, Off) per thermostat
 - **Heating output sensor** — track heating output percentage with history graphs and long-term statistics
+- **Power sensor** — instantaneous power draw (watts) of the connected heating load
+- **Energy dashboard** — hourly energy consumption imported into long-term statistics, including backfilled history, for use in the Home Assistant Energy dashboard
 - **GFCI fault sensor** — binary sensor for ground fault detection, enabling safety automations
 
 ## Installation
@@ -45,7 +47,12 @@ Each thermostat creates the following entities, grouped under a single device:
 |--------|------|-------------|
 | Floor Heat | Climate | Temperature control and mode selection |
 | Heating Output | Sensor | Current heating output percentage (0–100%) |
+| Power | Sensor | Instantaneous power draw in watts (connected load × heating output) |
 | GFCI Status | Binary Sensor | Ground fault detection (problem device class) |
+
+In addition, each thermostat's hourly energy consumption is imported into Home Assistant's long-term statistics (as an external statistic, in kWh) so it can be added to the **Energy dashboard**. When first set up, available historical hours are backfilled; the statistic then refreshes hourly.
+
+> **Note:** The thermostat reports energy per hour, not a continuously increasing meter reading, so energy appears as an Energy-dashboard statistic rather than a regular sensor entity. Add it via **Settings → Dashboards → Energy → Add consumption**, where it is listed as `Schluter DITRA-HEAT` energy for each thermostat.
 
 ## Polling and rate limits
 

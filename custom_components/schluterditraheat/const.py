@@ -16,6 +16,9 @@ API_TIMEOUT = 30
 # limits. Do not exceed ~600s or the server session expires (USRSESSEXP).
 SCAN_INTERVAL = timedelta(seconds=300)
 
+# Energy statistics refresh interval (matches the cloud's hourly consumption buckets)
+ENERGY_UPDATE_INTERVAL = timedelta(hours=1)
+
 # Static data cache refresh (polls between full refreshes; ~1 hour at 300s interval)
 STATIC_REFRESH_INTERVAL_POLLS = 12
 
