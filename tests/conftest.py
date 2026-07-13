@@ -43,6 +43,7 @@ _HA_MODULES = [
     "homeassistant.helpers",
     "homeassistant.helpers.aiohttp_client",
     "homeassistant.helpers.entity_platform",
+    "homeassistant.helpers.event",
     "homeassistant.helpers.update_coordinator",
 ]
 for _mod in _HA_MODULES:
