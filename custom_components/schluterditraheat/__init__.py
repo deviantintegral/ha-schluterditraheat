@@ -56,6 +56,49 @@ PLATFORMS: list[Platform] = [
 ]
 
 
+async def async_import_energy(
+    hass: HomeAssistant,
+    api: SchluterApi,
+    coordinator: SchluterDataUpdateCoordinator,
+) -> None:
+    """Import energy consumption into long-term statistics for the Energy dashboard.
+
+    Runs on its own hourly timer, independent of the coordinator's poll schedule
+    (the cloud buckets consumption hourly, so there is nothing to gain from
+    fetching it on every poll). Failures never affect the config entry.
+
+    Because the timer is independent, it has to honour the daily cap itself:
+    without the daily_limit_reached check it would keep calling the API every
+    hour while the coordinator sits paused on ACCDAYREQMAX, swallowing the error
+    each time and spending requests we do not have.
+    """
+    if not coordinator.data:
+        return
+    if coordinator.daily_limit_reached:
+        _LOGGER.debug(
+            "Skipping energy import: daily API request cap reached, "
+            "waiting for the coordinator to recover"
+        )
+        return
+    try:
+        await async_update_energy_statistics(
+            hass, api, list(coordinator.data.values())
+        )
+    except SchluterDailyLimitError as err:
+        # The energy import can be the first caller to hit the cap. Pause the
+        # coordinator too, so the whole integration backs off together rather
+        # than each timer discovering the cap independently.
+        seconds = coordinator.note_daily_limit()
+        _LOGGER.warning(
+            "Daily API request limit reached during energy import; "
+            "pausing polling ~%ss: %s",
+            round(seconds),
+            err,
+        )
+    except Exception:  # noqa: BLE001 - energy import must never break setup
+        _LOGGER.exception("Failed to update Schluter energy statistics")
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Schluter DITRA-HEAT from a config entry."""
     # Create API client
@@ -94,19 +137,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Setup platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Import energy consumption into long-term statistics for the Energy
-    # dashboard. Kept separate from the fast climate poll: an initial backfill
-    # runs in the background, then it refreshes hourly to match the cloud's
-    # hourly consumption buckets. Failures here never affect the config entry.
     async def _async_update_energy(_now: Any = None) -> None:
-        if not coordinator.data:
-            return
-        try:
-            await async_update_energy_statistics(
-                hass, api, list(coordinator.data.values())
-            )
-        except Exception:  # noqa: BLE001 - energy import must never break setup
-            _LOGGER.exception("Failed to update Schluter energy statistics")
+        await async_import_energy(hass, api, coordinator)
 
     entry.async_create_background_task(
         hass, _async_update_energy(), "schluter_energy_initial_import"
@@ -155,6 +187,10 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
         # set state, never assign update_interval directly.
         self._backoff_interval: timedelta | None = None  # explicit pause (backoff / daily cap)
         self._throttle_interval: timedelta | None = None  # budget-derived defer
+        # True while the daily cap (ACCDAYREQMAX) is in force. Read by other
+        # API callers on this config entry (the energy import) so they pause
+        # too; cleared by the first successful poll.
+        self.daily_limit_reached: bool = False
 
     def _needs_static_refresh(self) -> bool:
         """Determine if static data needs to be refreshed."""
@@ -191,6 +227,28 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
         if self._backoff_interval is not None:
             _LOGGER.info("Rate limit backoff cleared, resuming normal poll interval")
             self._backoff_interval = None
+        self.daily_limit_reached = False
+
+    def note_daily_limit(self) -> float:
+        """Pause polling after a daily-cap (ACCDAYREQMAX) hit.
+
+        Callable by any API caller on this config entry, not just the poll loop,
+        so whichever one hits the cap first pauses the rest. Returns the pause
+        length in seconds.
+
+        The pause targets the next local midnight but is capped at
+        DAILY_LIMIT_MAX_PAUSE so polling re-checks periodically: the backend's
+        true reset boundary (UTC vs. local) is not certain, and re-hitting the
+        cap simply pauses again. A later successful poll clears it.
+        """
+        seconds = min(
+            _seconds_until_local_midnight(self.hass),
+            DAILY_LIMIT_MAX_PAUSE.total_seconds(),
+        )
+        self.daily_limit_reached = True
+        self._backoff_interval = timedelta(seconds=seconds)
+        self._recompute_interval()
+        return seconds
 
     def _update_throttle_state(self) -> None:
         """Set the budget-derived defer from the latest rate-limit reading.
@@ -264,17 +322,9 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
                 f"Authentication failed: {err}"
             ) from err
         except SchluterDailyLimitError as err:
-            # Daily request cap hit. Pause polling as an explicit backoff, but
-            # cap the pause at DAILY_LIMIT_MAX_PAUSE so we re-check within an
-            # hour: the backend's reset boundary (UTC vs. local midnight) is not
-            # certain, and re-hitting the cap simply pauses again. A later
-            # successful poll clears the backoff and restores normal cadence.
-            seconds = min(
-                _seconds_until_local_midnight(self.hass),
-                DAILY_LIMIT_MAX_PAUSE.total_seconds(),
-            )
-            self._backoff_interval = timedelta(seconds=seconds)
-            self._recompute_interval()
+            # Daily request cap hit. note_daily_limit() pauses polling and flags
+            # the cap so the energy import pauses with us.
+            seconds = self.note_daily_limit()
             raise UpdateFailed(
                 f"Daily API request limit reached; pausing polling "
                 f"~{round(seconds)}s: {err}"
