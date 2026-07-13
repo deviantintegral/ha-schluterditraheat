@@ -42,6 +42,7 @@ _HA_MODULES = [
     "homeassistant",
     "homeassistant.components",
     "homeassistant.components.binary_sensor",
+    "homeassistant.components.button",
     "homeassistant.components.climate",
     "homeassistant.components.sensor",
     "homeassistant.config_entries",
@@ -79,6 +80,10 @@ class _BinarySensorEntity:
     """Stub for BinarySensorEntity."""
 
 
+class _ButtonEntity:
+    """Stub for ButtonEntity."""
+
+
 class _SensorEntity:
     """Stub for SensorEntity."""
 
@@ -96,6 +101,7 @@ sys.modules["homeassistant.exceptions"].ConfigEntryNotReady = _ConfigEntryNotRea
 sys.modules["homeassistant.exceptions"].HomeAssistantError = _HomeAssistantError
 
 # Entity base classes
+sys.modules["homeassistant.components.button"].ButtonEntity = _ButtonEntity
 sys.modules["homeassistant.components.binary_sensor"].BinarySensorEntity = (
     _BinarySensorEntity
 )

@@ -49,6 +49,7 @@ Each thermostat creates the following entities, grouped under a single device:
 | Heating Output | Sensor | Current heating output percentage (0–100%) |
 | Power | Sensor | Instantaneous power draw in watts (connected load × heating output) |
 | GFCI Status | Binary Sensor | Ground fault detection (problem device class) |
+| Refresh | Button | Force an immediate poll of the cloud (see below) |
 
 In addition, each thermostat's hourly energy consumption is imported into Home Assistant's long-term statistics (as an external statistic, in kWh) so it can be added to the **Energy dashboard**. When first set up, available historical hours are backfilled; the statistic then refreshes hourly.
 
@@ -61,6 +62,8 @@ The thermostat's cloud backend enforces request limits and publishes its remaini
 - Polls every **300 seconds** by default, the minimum cadence the backend's OEM (Sinopé) asks integrators to respect. (Static data such as device lists is refreshed roughly hourly; the fast path only fetches thermostat state.)
 - Reads the rate-limit headers on every response and **defers the next poll** automatically when the remaining budget runs low, resuming normal cadence once it recovers.
 - Recognizes the backend's JSON error codes (which it returns instead of HTTP 429): a daily-cap hit (`ACCDAYREQMAX`) pauses polling until midnight, an expired session (`USRSESSEXP`) re-authenticates transparently, and login/session limits are surfaced clearly.
+
+Because the scheduled poll is 300 seconds, a change made on the thermostat itself or in the Schluter phone app can take up to five minutes to appear in Home Assistant. Rather than make every installation poll faster than Sinopé asks, each thermostat exposes a **Refresh** button that forces an immediate poll — press it (or call `button.press` from an automation) when you want state right now. One press refreshes every thermostat on the account, and rapid presses are coalesced so the button cannot be used to hammer the API.
 
 ## Limitations
 
