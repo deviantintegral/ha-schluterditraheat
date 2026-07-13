@@ -2,36 +2,49 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
+from homeassistant.util import dt as dt_util
 
 from .api import (
     SchluterApi,
     SchluterApiError,
     SchluterAuthenticationError,
     SchluterConnectionError,
+    SchluterDailyLimitError,
     SchluterRateLimitError,
 )
 from .const import (
+    DAILY_LIMIT_MAX_PAUSE,
     DOMAIN,
     ENERGY_UPDATE_INTERVAL,
     RATE_LIMIT_BACKOFF_FACTOR,
     RATE_LIMIT_INITIAL_BACKOFF,
     RATE_LIMIT_MAX_BACKOFF,
+    RATE_LIMIT_REMAINING_FLOOR,
     SCAN_INTERVAL,
     STATIC_REFRESH_INTERVAL_POLLS,
 )
 from .energy import async_update_energy_statistics
+
+
+def _seconds_until_local_midnight(hass: HomeAssistant) -> float:
+    """Seconds from now until the next local midnight (for the daily cap)."""
+    now = dt_util.now()
+    midnight = dt_util.start_of_local_day() + timedelta(days=1)
+    return max(SCAN_INTERVAL.total_seconds(), (midnight - now).total_seconds())
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +66,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await api.authenticate()
     except SchluterAuthenticationError as err:
         raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
+    except SchluterRateLimitError as err:
+        # Login rate/daily limited (also covers SchluterDailyLimitError) —
+        # transient, so ask HA to retry setup later rather than failing hard.
+        raise ConfigEntryNotReady(
+            f"Schluter API rate limited during setup: {err}"
+        ) from err
     except SchluterConnectionError as err:
         _LOGGER.error("Failed to connect to Schluter API: %s", err)
         return False
@@ -110,8 +129,9 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Schluter data from the API.
 
     Caches static data (locations, devices, groups) and refreshes it hourly.
-    Polls only device attributes on each 60-second cycle. Implements
-    exponential backoff on rate-limit (429) responses.
+    Polls only device attributes on each cycle (SCAN_INTERVAL). Throttles
+    proactively from the API's reported rate-limit budget and backs off on
+    rate-limit / daily-cap responses.
     """
 
     def __init__(self, hass: HomeAssistant, api: SchluterApi) -> None:
@@ -125,7 +145,11 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
         self.api = api
         self._static_data: dict[int, dict] | None = None
         self._polls_since_static_refresh: int = 0
-        self._backoff_interval: timedelta | None = None
+        # Two independent poll-interval overrides. The effective interval is
+        # derived from them in one place (_recompute_interval); handlers only
+        # set state, never assign update_interval directly.
+        self._backoff_interval: timedelta | None = None  # explicit pause (backoff / daily cap)
+        self._throttle_interval: timedelta | None = None  # budget-derived defer
 
     def _needs_static_refresh(self) -> bool:
         """Determine if static data needs to be refreshed."""
@@ -133,8 +157,18 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
             return True
         return self._polls_since_static_refresh >= STATIC_REFRESH_INTERVAL_POLLS
 
+    def _recompute_interval(self) -> None:
+        """Derive the effective poll interval from the override state.
+
+        Single source of truth: an explicit pause (rate-limit backoff or daily
+        cap) wins, then a budget-derived defer, else the normal interval.
+        """
+        self.update_interval = (
+            self._backoff_interval or self._throttle_interval or SCAN_INTERVAL
+        )
+
     def _apply_rate_limit_backoff(self) -> None:
-        """Increase the poll interval due to rate limiting."""
+        """Grow the explicit backoff interval due to rate limiting."""
         if self._backoff_interval is None:
             self._backoff_interval = RATE_LIMIT_INITIAL_BACKOFF
         else:
@@ -142,21 +176,42 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
                 self._backoff_interval * RATE_LIMIT_BACKOFF_FACTOR,
                 RATE_LIMIT_MAX_BACKOFF,
             )
-        self.update_interval = self._backoff_interval
         _LOGGER.warning(
             "Rate limited by Schluter API, backing off to %s",
             self._backoff_interval,
         )
 
-    def _reset_backoff(self) -> None:
-        """Reset poll interval to normal after a successful response."""
+    def _clear_backoff(self) -> None:
+        """Clear any explicit backoff after a successful response."""
         if self._backoff_interval is not None:
-            _LOGGER.info(
-                "Rate limit backoff cleared, resuming normal %s poll interval",
-                SCAN_INTERVAL,
-            )
+            _LOGGER.info("Rate limit backoff cleared, resuming normal poll interval")
             self._backoff_interval = None
-            self.update_interval = SCAN_INTERVAL
+
+    def _update_throttle_state(self) -> None:
+        """Set the budget-derived defer from the latest rate-limit reading.
+
+        When the server reports the remaining budget at/below the floor, defer
+        the next poll until the window resets (clamped between the normal
+        interval and the max backoff); otherwise clear the defer.
+        """
+        rate_limit = self.api.rate_limit
+        if rate_limit is not None and rate_limit.is_low(RATE_LIMIT_REMAINING_FLOOR):
+            seconds = rate_limit.seconds_until_reset()
+            if seconds is None:
+                self._throttle_interval = None
+                return
+            seconds = max(
+                SCAN_INTERVAL.total_seconds(),
+                min(seconds, RATE_LIMIT_MAX_BACKOFF.total_seconds()),
+            )
+            self._throttle_interval = timedelta(seconds=seconds)
+            _LOGGER.warning(
+                "Rate-limit budget low (remaining=%s), deferring next poll %ss",
+                rate_limit.remaining,
+                round(seconds),
+            )
+        else:
+            self._throttle_interval = None
 
     async def _async_update_data(self) -> dict[int, dict]:
         """Fetch data from API.
@@ -184,8 +239,11 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
             device_ids = list(self._static_data.keys())
             dynamic_data = await self.api.get_device_attributes_bulk(device_ids)
 
-            # Successful response — clear any backoff
-            self._reset_backoff()
+            # Success: clear any backoff, refresh the budget-derived defer from
+            # the headers the server just returned, then derive the interval.
+            self._clear_backoff()
+            self._update_throttle_state()
+            self._recompute_interval()
 
             # Merge static + dynamic, same shape as get_all_thermostats()
             result: dict[int, dict] = {}
@@ -200,8 +258,25 @@ class SchluterDataUpdateCoordinator(DataUpdateCoordinator):
             raise ConfigEntryAuthFailed(
                 f"Authentication failed: {err}"
             ) from err
+        except SchluterDailyLimitError as err:
+            # Daily request cap hit. Pause polling as an explicit backoff, but
+            # cap the pause at DAILY_LIMIT_MAX_PAUSE so we re-check within an
+            # hour: the backend's reset boundary (UTC vs. local midnight) is not
+            # certain, and re-hitting the cap simply pauses again. A later
+            # successful poll clears the backoff and restores normal cadence.
+            seconds = min(
+                _seconds_until_local_midnight(self.hass),
+                DAILY_LIMIT_MAX_PAUSE.total_seconds(),
+            )
+            self._backoff_interval = timedelta(seconds=seconds)
+            self._recompute_interval()
+            raise UpdateFailed(
+                f"Daily API request limit reached; pausing polling "
+                f"~{round(seconds)}s: {err}"
+            ) from err
         except SchluterRateLimitError as err:
             self._apply_rate_limit_backoff()
+            self._recompute_interval()
             raise UpdateFailed(
                 f"Rate limited by API, next poll in {self._backoff_interval}: {err}"
             ) from err

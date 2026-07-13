@@ -10,6 +10,8 @@ from custom_components.schluterditraheat.api import (
     SchluterApiError,
     SchluterAuthenticationError,
     SchluterConnectionError,
+    SchluterDailyLimitError,
+    SchluterRateLimitError,
     SchluterSessionLimitError,
 )
 from custom_components.schluterditraheat.const import API_BASE_URL
@@ -120,7 +122,7 @@ class TestSessionLimit:
             status=200,
         )
 
-        with pytest.raises(SchluterApiError, match="Login error: SOMETHING_ELSE"):
+        with pytest.raises(SchluterApiError, match="API error: SOMETHING_ELSE"):
             await api_client.authenticate()
 
 
@@ -654,6 +656,212 @@ class TestSplitFetching:
         assert t["gfci_status"] == "ok"
 
 
+class TestRateLimitCapture:
+    """Test that rate-limit headers are captured off responses."""
+
+    async def test_captures_headers_on_request(self, api_client, mock_aiohttp):
+        """Test _request records the rate-limit budget from response headers."""
+        api_client._session_id = "test_session"
+        api_client._account_id = 10001
+
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            payload=[{"id": 30001, "name": "Home"}],
+            status=200,
+            headers={
+                "X-RateLimit-Limit": "100",
+                "X-RateLimit-Remaining": "97",
+                "X-RateLimit-Reset": "42",
+            },
+        )
+
+        await api_client.get_locations()
+
+        assert api_client.rate_limit is not None
+        assert api_client.rate_limit.limit == 100
+        assert api_client.rate_limit.remaining == 97
+
+    async def test_captures_headers_on_login(self, api_client, mock_aiohttp):
+        """Test authenticate records the rate-limit budget too."""
+        mock_aiohttp.post(
+            f"{API_BASE_URL}/login",
+            payload={
+                "session": "s",
+                "account": {"id": 10001},
+                "user": {"format": {"temperature": "f"}},
+            },
+            status=200,
+            headers={"X-RateLimit-Limit": "3", "X-RateLimit-Remaining": "2"},
+        )
+
+        await api_client.authenticate()
+
+        assert api_client.rate_limit is not None
+        assert api_client.rate_limit.limit == 3
+        assert api_client.rate_limit.remaining == 2
+
+
+class TestErrorCodeHandling:
+    """Test JSON error-code mapping on HTTP-200 bodies."""
+
+    async def test_daily_limit_raises_daily_error(self, api_client, mock_aiohttp):
+        """Test ACCDAYREQMAX maps to SchluterDailyLimitError."""
+        api_client._session_id = "test_session"
+        api_client._account_id = 10001
+
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            payload={"error": {"code": "ACCDAYREQMAX", "data": {"daily": 30000}}},
+            status=200,
+        )
+
+        with pytest.raises(SchluterDailyLimitError):
+            await api_client.get_locations()
+
+    async def test_daily_error_is_rate_limit_error(self, api_client, mock_aiohttp):
+        """Test SchluterDailyLimitError is catchable as SchluterRateLimitError."""
+        api_client._session_id = "test_session"
+        api_client._account_id = 10001
+
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            payload={"error": {"code": "ACCDAYREQMAX"}},
+            status=200,
+        )
+
+        with pytest.raises(SchluterRateLimitError):
+            await api_client.get_locations()
+
+    async def test_login_rate_limit_code(self, api_client, mock_aiohttp):
+        """Test ACCRATELIMIT maps to SchluterRateLimitError."""
+        api_client._session_id = "test_session"
+        api_client._account_id = 10001
+
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            payload={"error": {"code": "ACCRATELIMIT"}},
+            status=200,
+        )
+
+        with pytest.raises(SchluterRateLimitError):
+            await api_client.get_locations()
+
+    async def test_session_expired_reauthenticates_and_retries(
+        self, api_client, mock_aiohttp
+    ):
+        """Test USRSESSEXP triggers re-auth and a retry of the request."""
+        api_client._session_id = "old_session"
+        api_client._account_id = 10001
+
+        # First call: session-expired error body
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            payload={"error": {"code": "USRSESSEXP"}},
+            status=200,
+        )
+        # Re-auth succeeds
+        mock_aiohttp.post(
+            f"{API_BASE_URL}/login",
+            payload={
+                "session": "new_session",
+                "account": {"id": 10001},
+                "user": {"format": {"temperature": "f"}},
+            },
+            status=200,
+        )
+        # Retry succeeds
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            payload=[{"id": 30001, "name": "Home"}],
+            status=200,
+        )
+
+        locations = await api_client.get_locations()
+
+        assert len(locations) == 1
+        assert api_client._session_id == "new_session"
+
+    async def test_unknown_error_code_raises_api_error(self, api_client, mock_aiohttp):
+        """Test an unrecognized error code raises the generic SchluterApiError."""
+        api_client._session_id = "test_session"
+        api_client._account_id = 10001
+
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            payload={"error": {"code": "MYSTERY"}},
+            status=200,
+        )
+
+        with pytest.raises(SchluterApiError, match="API error: MYSTERY"):
+            await api_client.get_locations()
+
+
+class TestReviewRegressions:
+    """Regression tests for issues found in code review."""
+
+    async def test_null_account_does_not_crash(self, api_client, mock_aiohttp):
+        """Test a null 'account' value raises a clean error, not AttributeError."""
+        mock_aiohttp.post(
+            f"{API_BASE_URL}/login",
+            payload={"session": "s", "account": None, "user": None},
+            status=200,
+        )
+
+        # Should raise SchluterApiError (missing account id), NOT AttributeError.
+        with pytest.raises(SchluterApiError):
+            await api_client.authenticate()
+
+    async def test_bulk_propagates_session_error(self, api_client, mock_aiohttp):
+        """Test an account-wide session error propagates out of the bulk fetch."""
+        import re as _re
+
+        api_client._session_id = "test_session"
+
+        mock_aiohttp.get(
+            _re.compile(r".*/device/40001/attribute\?attributes=.*"),
+            payload={"error": {"code": "ACCSESSEXC"}},
+            status=200,
+        )
+
+        # ACCSESSEXC -> SchluterSessionLimitError (an auth error) must NOT be
+        # swallowed as a per-device skip.
+        with pytest.raises(SchluterAuthenticationError):
+            await api_client.get_device_attributes_bulk([40001])
+
+    async def test_bulk_propagates_daily_limit(self, api_client, mock_aiohttp):
+        """Test a daily-cap error propagates out of the bulk fetch."""
+        import re as _re
+
+        api_client._session_id = "test_session"
+
+        mock_aiohttp.get(
+            _re.compile(r".*/device/40001/attribute\?attributes=.*"),
+            payload={"error": {"code": "ACCDAYREQMAX"}},
+            status=200,
+        )
+
+        with pytest.raises(SchluterDailyLimitError):
+            await api_client.get_device_attributes_bulk([40001])
+
+    async def test_reauth_propagates_rate_limit(self, api_client, mock_aiohttp):
+        """Test a rate limit during mid-poll re-auth is not mislabeled as auth."""
+        api_client._session_id = "expired"
+        api_client._account_id = 10001
+
+        # First request 401 -> triggers re-auth
+        mock_aiohttp.get(
+            f"{API_BASE_URL}/locations?account$id=10001",
+            status=401,
+        )
+        # Re-login is rate limited (ACCRATELIMIT), NOT an auth failure
+        mock_aiohttp.post(
+            f"{API_BASE_URL}/login",
+            payload={"error": {"code": "ACCRATELIMIT"}},
+            status=200,
+        )
+
+        with pytest.raises(SchluterRateLimitError):
+            await api_client.get_locations()
 class TestLoadWattParsing:
     """Test connected-load (watts) parsing from device attributes."""
 

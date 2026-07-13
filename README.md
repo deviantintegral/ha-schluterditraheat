@@ -54,6 +54,14 @@ In addition, each thermostat's hourly energy consumption is imported into Home A
 
 > **Note:** The thermostat reports energy per hour, not a continuously increasing meter reading, so energy appears as an Energy-dashboard statistic rather than a regular sensor entity. Add it via **Settings → Dashboards → Energy → Add consumption**, where it is listed as `Schluter DITRA-HEAT` energy for each thermostat.
 
+## Polling and rate limits
+
+The thermostat's cloud backend enforces request limits and publishes its remaining budget in `X-RateLimit-*` response headers on every call. This integration:
+
+- Polls every **300 seconds** by default, the minimum cadence the backend's OEM (Sinopé) asks integrators to respect. (Static data such as device lists is refreshed roughly hourly; the fast path only fetches thermostat state.)
+- Reads the rate-limit headers on every response and **defers the next poll** automatically when the remaining budget runs low, resuming normal cadence once it recovers.
+- Recognizes the backend's JSON error codes (which it returns instead of HTTP 429): a daily-cap hit (`ACCDAYREQMAX`) pauses polling until midnight, an expired session (`USRSESSEXP`) re-authenticates transparently, and login/session limits are surfaced clearly.
+
 ## Limitations
 
 This integration supports monitoring and basic control. The following are **not** currently supported:
