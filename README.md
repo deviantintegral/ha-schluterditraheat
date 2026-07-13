@@ -15,6 +15,8 @@ Tested with the **DITRA-HEAT-E-RS1** thermostat. Other models using the same clo
 - **Power sensor** — instantaneous power draw (watts) of the connected heating load
 - **Energy dashboard** — hourly energy consumption imported into long-term statistics, including backfilled history, for use in the Home Assistant Energy dashboard
 - **GFCI fault sensor** — binary sensor for ground fault detection, enabling safety automations
+- **Wi-Fi signal sensor** — diagnostic sensor reporting signal strength in dBm
+- **Device metadata** — model, software and hardware version, and serial number on the device page
 
 ## Installation
 
@@ -49,6 +51,11 @@ Each thermostat creates the following entities, grouped under a single device:
 | Heating Output | Sensor | Current heating output percentage (0–100%) |
 | Power | Sensor | Instantaneous power draw in watts (connected load × heating output) |
 | GFCI Status | Binary Sensor | Ground fault detection (problem device class) |
+| Wi-Fi Signal | Sensor | Signal strength in dBm (diagnostic) |
+
+The device page also shows the model, software version, hardware version and serial number reported by the thermostat.
+
+The web app renders the same Wi-Fi reading as a five-level scale (amazing, very good, okay, weak, very weak). The API returns the underlying dBm value, which is what this integration exposes; use a template sensor if you want the bucketed wording.
 
 In addition, each thermostat's hourly energy consumption is imported into Home Assistant's long-term statistics (as an external statistic, in kWh) so it can be added to the **Energy dashboard**. When first set up, available historical hours are backfilled; the statistic then refreshes hourly.
 

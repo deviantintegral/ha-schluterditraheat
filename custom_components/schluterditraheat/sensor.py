@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -10,13 +9,18 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfPower
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import SchluterDataUpdateCoordinator
 from .const import DOMAIN
+from .entity import SchluterEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,55 +34,72 @@ async def async_setup_entry(
     coordinator: SchluterDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities: list[SensorEntity] = []
-    for device_id in coordinator.data:
+    for device_id, thermostat in coordinator.data.items():
         entities.append(SchluterHeatingOutputSensor(coordinator, device_id))
         entities.append(SchluterPowerSensor(coordinator, device_id))
+
+        # Only create the Wi-Fi sensor for devices that actually report a
+        # signal, rather than leaving everyone else with a permanently unknown
+        # diagnostic entity.
+        if "rssi" in thermostat:
+            entities.append(SchluterWifiSignalSensor(coordinator, device_id))
+        else:
+            _LOGGER.debug(
+                "Device %s reported no Wi-Fi signal; skipping the sensor", device_id
+            )
+
     async_add_entities(entities)
 
 
-class SchluterHeatingOutputSensor(
-    CoordinatorEntity[SchluterDataUpdateCoordinator], SensorEntity
-):
+class SchluterHeatingOutputSensor(SchluterEntity, SensorEntity):
     """Sensor for heating output percentage on a Schluter thermostat."""
 
     _attr_device_class = SensorDeviceClass.POWER_FACTOR
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_has_entity_name = True
     _attr_name = "Heating Output"
 
     def __init__(
         self, coordinator: SchluterDataUpdateCoordinator, device_id: int
     ) -> None:
         """Initialize the heating output sensor."""
-        super().__init__(coordinator)
-        self._device_id = device_id
-
-        thermostat = coordinator.data[device_id]
-        self._attr_unique_id = f"{thermostat['identifier']}_heating_output"
-
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, thermostat["identifier"])},
-            "name": thermostat.get("group_name") or thermostat.get("name"),
-            "manufacturer": thermostat.get("vendor", "Schluter"),
-            "model": thermostat.get("sku", "DITRA-HEAT-E-WiFi"),
-        }
+        super().__init__(coordinator, device_id)
+        self._attr_unique_id = f"{self._identifier}_heating_output"
 
     @property
     def native_value(self) -> int:
         """Return the current heating output percentage."""
-        thermostat = self.coordinator.data.get(self._device_id, {})
-        return thermostat.get("heating_percent", 0)
+        return self._thermostat.get("heating_percent", 0)
+
+
+class SchluterWifiSignalSensor(SchluterEntity, SensorEntity):
+    """Wi-Fi signal strength reported by a Schluter thermostat.
+
+    The web app buckets this into a five-level scale (amazing, very good,
+    okay, weak, very weak); the API itself returns the raw dBm value, which is
+    what we expose.
+    """
+
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_name = "Wi-Fi Signal"
+
+    def __init__(
+        self, coordinator: SchluterDataUpdateCoordinator, device_id: int
+    ) -> None:
+        """Initialize the Wi-Fi signal sensor."""
+        super().__init__(coordinator, device_id)
+        self._attr_unique_id = f"{self._identifier}_wifi_signal"
 
     @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self._device_id in self.coordinator.data
+    def native_value(self) -> int | None:
+        """Return the Wi-Fi signal strength in dBm."""
+        return self._thermostat.get("rssi")
 
 
-class SchluterPowerSensor(
-    CoordinatorEntity[SchluterDataUpdateCoordinator], SensorEntity
-):
+class SchluterPowerSensor(SchluterEntity, SensorEntity):
     """Instantaneous power draw of a Schluter thermostat's heating load.
 
     The thermostat reports its connected load (watts) and its current heating
@@ -88,37 +109,21 @@ class SchluterPowerSensor(
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_has_entity_name = True
     _attr_name = "Power"
 
     def __init__(
         self, coordinator: SchluterDataUpdateCoordinator, device_id: int
     ) -> None:
         """Initialize the power sensor."""
-        super().__init__(coordinator)
-        self._device_id = device_id
-
-        thermostat = coordinator.data[device_id]
-        self._attr_unique_id = f"{thermostat['identifier']}_power"
-
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, thermostat["identifier"])},
-            "name": thermostat.get("group_name") or thermostat.get("name"),
-            "manufacturer": thermostat.get("vendor", "Schluter"),
-            "model": thermostat.get("sku", "DITRA-HEAT-E-WiFi"),
-        }
+        super().__init__(coordinator, device_id)
+        self._attr_unique_id = f"{self._identifier}_power"
 
     @property
     def native_value(self) -> float | None:
         """Return the current power draw in watts."""
-        thermostat = self.coordinator.data.get(self._device_id)
-        if thermostat is None:
+        thermostat = self._thermostat
+        if not thermostat:
             return None
         load_watt = thermostat.get("load_watt") or 0
         heating_percent = thermostat.get("heating_percent") or 0
         return round(load_watt * heating_percent / 100, 1)
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self._device_id in self.coordinator.data
