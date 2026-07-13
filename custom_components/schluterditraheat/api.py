@@ -16,9 +16,18 @@ from .const import API_BASE_URL, API_TIMEOUT
 _LOGGER = logging.getLogger(__name__)
 
 # JSON error codes this backend (a white-labeled Sinope/Neviweb cloud) returns
-# in an HTTP-200 body instead of using HTTP status codes. See the rate-limiting
-# design notes for the full vocabulary.
-ERROR_DAILY_LIMIT = "ACCDAYREQMAX"      # daily request cap reached (~30,000/day)
+# in an HTTP-200 body instead of using HTTP status codes.
+#
+# The codes are documented by the Neviweb community integration
+# (https://github.com/claudegel/sinope-130), which describes the parent platform
+# this backend white-labels. The codes themselves are confirmed present here
+# (ACCDAYREQMAX appears in schluterditraheat.com's own web client), but the
+# documented *limits* below come from Neviweb and are not independently verified
+# against schluterditraheat.com — treat them as informative, not authoritative.
+# Nothing in this module reads these values; handling is reactive.
+ERROR_DAILY_LIMIT = "ACCDAYREQMAX"      # daily request cap; Neviweb documents
+                                        # 30,000/day and the error body embeds
+                                        # the cap as {"daily": 30000}
 ERROR_RATE_LIMIT = "ACCRATELIMIT"       # logging in too frequently
 ERROR_SESSION_LIMIT = "ACCSESSEXC"      # too many concurrent sessions
 ERROR_SESSION_EXPIRED = "USRSESSEXP"    # session expired; re-authenticate
