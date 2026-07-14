@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "aiohttp>=3.8.0",
+#     "async-timeout>=4.0.0",
+# ]
+# ///
 """Check the power model against the cloud's own hourly consumption.
 
 The power sensor computes ``load_watt x percent``. Two attributes could supply
@@ -12,11 +19,18 @@ converts each into a predicted watt-hours for the hour, and scores them against
 the actual watt-hours the consumption endpoint reports for that same hour. The
 candidate that matches is the one the sensor should be using.
 
+Dependencies are declared inline (PEP 723), so uv fetches them into a throwaway
+environment -- nothing to install, and Home Assistant is never imported.
+
 Usage:
     export SCHLUTER_USERNAME=you@example.com
     export SCHLUTER_PASSWORD=...
-    python3 scripts/validate_power_model.py --probe          # one-shot, ~5 requests
-    python3 scripts/validate_power_model.py                  # sample 1 hour, then score
+    uv run scripts/validate_power_model.py --probe          # one-shot, ~5 requests
+    uv run scripts/validate_power_model.py                  # sample 1 hour, then score
+
+The shebang also carries `uv run --script`, so ./scripts/validate_power_model.py
+works directly. Plain `python3 scripts/validate_power_model.py` still works too,
+provided aiohttp is already available.
 
 Run it while the floor is actually heating. An idle hour reads zero on every
 candidate and discriminates nothing.
