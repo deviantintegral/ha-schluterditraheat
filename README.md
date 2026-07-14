@@ -10,7 +10,7 @@ Tested with the **DITRA-HEAT-E-RS1** thermostat. Other models using the same clo
 
 ## Features
 
-- **Climate entity** — control temperature and mode (Auto, Heat/Manual, Off) per thermostat
+- **Climate entity** — control temperature and mode (Auto, Heat/Manual, Off) per thermostat, plus a frost protection preset
 - **Heating output sensor** — track heating output percentage with history graphs and long-term statistics
 - **Power sensor** — instantaneous power draw (watts) of the connected heating load
 - **Energy dashboard** — hourly energy consumption imported into long-term statistics, including backfilled history, for use in the Home Assistant Energy dashboard

@@ -59,4 +59,10 @@ ATTR_LOCATION_NAME = "location_name"
 # Modes
 MODE_AUTO = "auto"
 MODE_OFF = "off"
-MODE_MANUAL = "autoBypass"  # For manual temperature override
+MODE_MANUAL = "manual"  # For manual temperature override
+MODE_FROST_SAFE = "frostProtection"
+
+# Preset modes — only needed for modes that have no HVACMode enum equivalent.
+# auto/manual/off map to HVACMode.AUTO/HEAT/OFF so HA owns those labels.
+PRESET_NONE = "none"
+PRESET_FROST_PROTECTION = "frost_protection"

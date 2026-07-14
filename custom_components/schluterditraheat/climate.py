@@ -27,8 +27,11 @@ from .const import (
     MAX_TEMP_C,
     MIN_TEMP_C,
     MODE_AUTO,
+    MODE_FROST_SAFE,
     MODE_MANUAL,
     MODE_OFF,
+    PRESET_FROST_PROTECTION,
+    PRESET_NONE,
 )
 from .entity import SchluterEntity
 
@@ -62,9 +65,13 @@ class SchluterThermostat(SchluterEntity, ClimateEntity):
 
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TURN_ON
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.PRESET_MODE
     )
     _attr_hvac_modes = [HVACMode.HEAT, HVACMode.OFF, HVACMode.AUTO]
+    _attr_preset_modes = [PRESET_NONE, PRESET_FROST_PROTECTION]
 
     def __init__(
         self, coordinator: SchluterDataUpdateCoordinator, device_id: int
@@ -128,6 +135,18 @@ class SchluterThermostat(SchluterEntity, ClimateEntity):
         return HVACAction.IDLE
 
     @property
+    def preset_mode(self) -> str | None:
+        """Return current preset mode."""
+        thermostat = self.coordinator.data.get(self._device_id, {})
+        mode = thermostat.get("mode")
+
+        if mode == MODE_FROST_SAFE:
+            return PRESET_FROST_PROTECTION
+        if mode in (MODE_MANUAL, MODE_AUTO, MODE_OFF):
+            return PRESET_NONE
+        return None
+
+    @property
     def min_temp(self) -> float:
         """Return the minimum temperature."""
         return MIN_TEMP_C
@@ -182,6 +201,28 @@ class SchluterThermostat(SchluterEntity, ClimateEntity):
             await self.coordinator.api.set_mode(self._device_id, mode)
         except SchluterApiError as err:
             raise HomeAssistantError(f"Failed to set HVAC mode: {err}") from err
+
+        # Optimistic update — push new value to UI immediately
+        if self._device_id in self.coordinator.data:
+            self.coordinator.data[self._device_id]["mode"] = mode
+            self.async_write_ha_state()
+
+        await self.coordinator.async_request_refresh()
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Set new preset mode."""
+        if preset_mode == PRESET_FROST_PROTECTION:
+            mode = MODE_FROST_SAFE
+        elif preset_mode == PRESET_NONE:
+            mode = MODE_MANUAL
+        else:
+            _LOGGER.error("Unsupported preset mode: %s", preset_mode)
+            return
+
+        try:
+            await self.coordinator.api.set_mode(self._device_id, mode)
+        except SchluterApiError as err:
+            raise HomeAssistantError(f"Failed to set preset mode: {err}") from err
 
         # Optimistic update — push new value to UI immediately
         if self._device_id in self.coordinator.data:
