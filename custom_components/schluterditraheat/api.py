@@ -353,6 +353,8 @@ class SchluterApi:
                 )
                 continue
 
+            _LOGGER.debug("Raw attributes for device %s: %s", device_id, raw)
+
             result[device_id] = {
                 "current_temperature": raw.get(
                     "roomTemperatureDisplay", {}
@@ -377,13 +379,11 @@ class SchluterApi:
         why both are summed rather than only reading output 1.
 
         Summing assumes both outputs run at the same duty cycle, since the API
-        exposes a single ``floorSetpointPwm`` and no per-output equivalent: the
-        power sensor multiplies this combined load by that one percentage. That
-        holds for a single thermostat driving both circuits together, but it is
-        an inference from an undocumented API, not something the cloud states.
-        If a two-circuit floor ever reports power that disagrees with the
-        consumption endpoint's hourly watt-hours, this assumption is the first
-        thing to doubt.
+        exposes no per-output percentage: the power sensor multiplies this one
+        combined load by a single percentage. That holds for a single thermostat
+        driving both circuits together, but it is an inference from an
+        undocumented API, not something the cloud states, and it is untested —
+        it needs a two-circuit floor to confirm.
 
         Outputs are returned as bare numbers, but tolerate the ``{"value": n}``
         wrapper some attributes use. Missing/None outputs count as zero.
