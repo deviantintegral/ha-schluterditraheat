@@ -78,8 +78,61 @@ _api = importlib.import_module("_schluter.api")
 SchluterApi = _api.SchluterApi
 SchluterApiError = _api.SchluterApiError
 
-# The two attributes that could plausibly be the duty cycle to integrate.
+# Attributes sampled from the device on every poll.
 CANDIDATES = ["outputPercentDisplay", "floorSetpointPwm"]
+
+
+def model_percent_as_duty(row: dict[str, float | None]) -> float | None:
+    """The integration's current model: power = load_watt x percent.
+
+    Treats outputPercentDisplay as a duty cycle to be averaged.
+    """
+    return row.get("outputPercentDisplay")
+
+
+def model_on_off(row: dict[str, float | None]) -> float | None:
+    """Element is either fully on or fully off; percent only says *which*.
+
+    Sampling shows outputPercentDisplay sitting at 0 for most of a ~15 minute PWM
+    cycle and jumping to a quantized 20/40/60 for the minutes the cable actually
+    conducts. If that non-zero window IS the conducting window, then instantaneous
+    power is the full connected load, not a fraction of it -- a resistive cable
+    switches, it does not modulate. Averaging this over an hour gives
+    load_watt x (fraction of time on), which is the physically meaningful figure.
+    """
+    percent = row.get("outputPercentDisplay")
+    if percent is None:
+        return None
+    return 100.0 if percent > 0 else 0.0
+
+
+def model_floor_pwm(row: dict[str, float | None]) -> float | None:
+    """Kept only to keep proving it is dead -- it reads 0 even at full demand."""
+    return row.get("floorSetpointPwm")
+
+
+# Competing models for "what percentage of full load was drawn on average".
+MODELS: dict[str, Any] = {
+    "percent-as-duty": model_percent_as_duty,
+    "on/off full load": model_on_off,
+    "floorSetpointPwm": model_floor_pwm,
+}
+
+
+async def consumption_with_reauth(api: SchluterApi, device_id: int) -> dict[str, Any]:
+    """Fetch consumption, re-authenticating once if the session has expired.
+
+    A sampling run plus the wait for the cloud's lagging buckets can outlive a
+    session, and losing an hour of samples to USRSESSEXP would be absurd.
+    """
+    try:
+        return await api.get_consumption_history(device_id, "hourly")
+    except SchluterApiError as err:
+        if "SESSEXP" not in str(err):
+            raise
+        print("  session expired -- re-authenticating")
+        await api.authenticate()
+        return await api.get_consumption_history(device_id, "hourly")
 
 
 def coerce_percent(value: Any) -> float | None:
@@ -344,7 +397,7 @@ async def score(
     deadline = datetime.now(timezone.utc) + timedelta(minutes=wait_minutes)
 
     while True:
-        consumption = await api.get_consumption_history(device_id, "hourly")
+        consumption = await consumption_with_reauth(api, device_id)
         actual = {
             start: kwh * 1000 for start, kwh in api.parse_consumption_history(consumption)
         }
@@ -371,11 +424,11 @@ async def score(
 
     print("\n=== Predicted vs actual watt-hours ===")
     header = f"{'hour (UTC)':<18}{'n':>4}{'actual Wh':>11}{'implied %':>11}"
-    for name in CANDIDATES:
-        header += f"{name[:14] + ' %':>18}{'pred Wh':>10}{'err':>8}"
+    for name in MODELS:
+        header += f"{name + ' %':>20}{'pred Wh':>10}{'err':>8}"
     print(header)
 
-    totals: dict[str, list[float]] = {name: [] for name in CANDIDATES}
+    totals: dict[str, list[float]] = {name: [] for name in MODELS}
     unscored: list[datetime] = []
 
     for hour in sorted(hourly):
@@ -390,15 +443,15 @@ async def score(
         implied = 100 * actual_wh / watts if watts else float("nan")
 
         line = f"{hour:%m-%d %H:%M}  {len(rows):>4}{actual_wh:>11.1f}{implied:>11.1f}"
-        for name in CANDIDATES:
-            pct = mean([r[name] for r in rows])
+        for name, model in MODELS.items():
+            pct = mean([model(r) for r in rows])
             if pct is None or not watts:
-                line += f"{'n/a':>18}{'-':>10}{'-':>8}"
+                line += f"{'n/a':>20}{'-':>10}{'-':>8}"
                 continue
             pred_wh = watts * pct / 100
             err = 100 * (pred_wh - actual_wh) / actual_wh if actual_wh else float("nan")
             totals[name].append(abs(err))
-            line += f"{pct:>18.1f}{pred_wh:>10.1f}{err:>7.0f}%"
+            line += f"{pct:>20.1f}{pred_wh:>10.1f}{err:>7.0f}%"
         print(line)
 
     print("\n=== Verdict ===")
@@ -409,7 +462,7 @@ async def score(
         for hour in unscored:
             rows = hourly[hour]
             summary = ", ".join(
-                f"{name}={mean([r[name] for r in rows])}" for name in CANDIDATES
+                f"{name}={mean([model(r) for r in rows])}" for name, model in MODELS.items()
             )
             watts = mean([r["load_watt"] for r in rows]) or 0.0
             print(
@@ -424,7 +477,7 @@ async def score(
         return
 
     ranked = []
-    for name in CANDIDATES:
+    for name in MODELS:
         if totals[name]:
             avg = sum(totals[name]) / len(totals[name])
             ranked.append((avg, name))
@@ -438,17 +491,25 @@ async def score(
 
     ranked.sort()
     best_err, best = ranked[0]
-    print(
-        f"\n  Closest match: {best}"
-        + (f" ({best_err:.1f}% mean error)" if best_err else "")
-    )
-    if best_err < 10:
-        print(f"  -> The power sensor should multiply load_watt by {best}.")
-    else:
+    print(f"\n  Closest match: {best} ({best_err:.1f}% mean error)")
+
+    if best_err >= 15:
         print(
-            "  -> Neither candidate is convincing. The percentage may not be an\n"
-            "     integrable duty cycle at all, or the load_watt constant is wrong.\n"
-            "     Compare the 'implied %' column against both candidates by hand."
+            "  -> No model is convincing. Compare 'implied %' against each model's\n"
+            "     column by hand; something else is going on."
+        )
+    elif best == "on/off full load":
+        print(
+            "  -> The cable switches rather than modulates: instantaneous power is the\n"
+            "     full connected load whenever outputPercentDisplay > 0, and 0 otherwise.\n"
+            "     The sensor must NOT multiply load_watt by the percentage -- doing so\n"
+            "     under-reports, because the attribute already reads 0 for the off phase\n"
+            "     of each PWM cycle."
+        )
+    elif best == "percent-as-duty":
+        print(
+            "  -> The integration's current model is correct: load_watt x percent, with\n"
+            "     the percentage treated as an averageable duty cycle."
         )
 
 
