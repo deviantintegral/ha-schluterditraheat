@@ -249,6 +249,65 @@ def mean(values: list[float | None]) -> float | None:
     return sum(present) / len(present)
 
 
+async def compare_devices(api: SchluterApi, devices: dict[int, dict[str, Any]]) -> None:
+    """Check whether the consumption endpoint is actually scoped to one device.
+
+    It echoes back the deviceId it was asked for, but the figures it returns are
+    far too large for a single small cable and carry on regardless of whether
+    that cable is heating. If every device on the account returns the *same*
+    history, the endpoint is really reporting account- or location-wide totals
+    and this integration must not attribute them to individual thermostats.
+    """
+    print("\n=== Is consumption really per-device? ===")
+    if len(devices) < 2:
+        print(
+            "  Only one thermostat on this account, so this cannot be tested here.\n"
+            "  The check matters on multi-thermostat accounts: identical histories\n"
+            "  across devices would mean the endpoint is not device-scoped."
+        )
+        return
+
+    histories: dict[int, list[tuple[datetime, float]]] = {}
+    for device_id, info in devices.items():
+        try:
+            raw = await api.get_consumption_history(device_id, "hourly")
+        except SchluterApiError as err:
+            print(f"  device {device_id}: unavailable ({err})")
+            continue
+        histories[device_id] = api.parse_consumption_history(raw)
+
+    if len(histories) < 2:
+        print("  Fewer than two histories came back -- cannot compare.")
+        return
+
+    ids = sorted(histories)
+    print(f"\n  {'hour (UTC)':<18}" + "".join(f"{'dev ' + str(i):>12}" for i in ids))
+    hours = sorted({start for pts in histories.values() for start, _ in pts})[-8:]
+    for hour in hours:
+        line = f"  {hour:%Y-%m-%d %H:%M}"
+        for device_id in ids:
+            wh = dict(histories[device_id]).get(hour)
+            line += f"{wh * 1000:>12.0f}" if wh is not None else f"{'-':>12}"
+        print(line)
+
+    first = histories[ids[0]]
+    identical = all(histories[i] == first for i in ids[1:])
+    print()
+    if identical:
+        print(
+            "  IDENTICAL across every device. The endpoint is NOT device-scoped --\n"
+            "  it returns account/location totals and merely echoes the deviceId.\n"
+            "  Importing this per-thermostat would multiply the house's energy by\n"
+            "  the number of thermostats. The energy import cannot ship as written."
+        )
+    else:
+        print(
+            "  Histories differ between devices, so the endpoint IS device-scoped.\n"
+            "  The figures must then be explained some other way -- they remain far\n"
+            "  too large for the measured load."
+        )
+
+
 async def score(
     api: SchluterApi,
     device_id: int,
@@ -358,8 +417,11 @@ async def main() -> int:
         device_id = args.device_id or next(iter(devices))
         info = devices[device_id]
         print(f"Device {device_id}: {info.get('group_name') or info.get('name')}")
+        if len(devices) > 1:
+            print(f"({len(devices)} thermostats on this account)")
 
         await probe(api, device_id)
+        await compare_devices(api, devices)
         if args.probe:
             return 0
 

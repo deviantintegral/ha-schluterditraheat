@@ -247,9 +247,15 @@ class SchluterApi:
             "roomSetpoint",
             "occupancyMode",
             "gfciStatus",
+            # Always returns 0, even at 100% output -- it is not the duty cycle
+            # its name suggests. Kept only because it predates this integration's
+            # power support; nothing parses it.
             "floorSetpointPwm",
-            # Connected heating load per output, in watts. Combined with the
-            # output percentage this gives instantaneous power draw.
+            # Connected heating load per output, in watts. Combined with
+            # outputPercentDisplay this gives the power draw. Not a static
+            # nameplate figure: it drifts a few percent as the cable warms
+            # (measured 276 W idle, 264 W while conducting), so treat it as a
+            # derived measurement rather than a constant.
             "loadWattOutput1",
             "loadWattOutput2",
         ]
