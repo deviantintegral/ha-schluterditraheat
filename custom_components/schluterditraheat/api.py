@@ -373,6 +373,18 @@ class SchluterApi:
     def _parse_load_watt(raw: dict[str, Any]) -> int:
         """Sum the connected load (watts) across both heating outputs.
 
+        A larger floor can be wired as two circuits, one per output, which is
+        why both are summed rather than only reading output 1.
+
+        Summing assumes both outputs run at the same duty cycle, since the API
+        exposes a single ``floorSetpointPwm`` and no per-output equivalent: the
+        power sensor multiplies this combined load by that one percentage. That
+        holds for a single thermostat driving both circuits together, but it is
+        an inference from an undocumented API, not something the cloud states.
+        If a two-circuit floor ever reports power that disagrees with the
+        consumption endpoint's hourly watt-hours, this assumption is the first
+        thing to doubt.
+
         Outputs are returned as bare numbers, but tolerate the ``{"value": n}``
         wrapper some attributes use. Missing/None outputs count as zero.
         """
