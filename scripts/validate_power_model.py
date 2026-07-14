@@ -125,20 +125,62 @@ async def probe(api: SchluterApi, device_id: int) -> dict[str, Any]:
     print(f"  {'load_watt (sum)':<24} {watts} W")
 
     consumption = await api.get_consumption_history(device_id, "hourly")
+
+    # The response's own metadata. We parse `period` as watt-hours purely because
+    # the API labels the unit "watts" and we assumed it meant Wh-per-bucket. That
+    # assumption is exactly what is in doubt, so show every field it ships.
+    print("\n=== Consumption response: top-level fields ===")
+    for key, value in consumption.items():
+        if key == "history":
+            print(f"  {key:<16} (list of {len(value)} buckets)")
+        else:
+            print(f"  {key:<16} {value!r}")
+    print("\n  first 3 history buckets, verbatim:")
+    for item in consumption.get("history", [])[:3]:
+        print(f"    {json.dumps(item, sort_keys=True)}")
+
     points = api.parse_consumption_history(consumption)
     print(f"\n=== Cloud hourly consumption (last {min(12, len(points))} of {len(points)}) ===")
-    print(f"  {'hour (UTC)':<22}{'Wh':>8}{'implied duty %':>17}")
+    print(f"  {'hour (UTC)':<22}{'period':>9}{'as Wh':>8}{'implied duty %':>17}")
     for start, kwh in points[-12:]:
         wh = kwh * 1000
         duty = f"{100 * wh / watts:>16.1f}" if watts else "  (no load_watt)"
-        print(f"  {start.strftime('%Y-%m-%d %H:%M'):<22}{wh:>8.1f}{duty}")
+        print(f"  {start.strftime('%Y-%m-%d %H:%M'):<22}{wh:>9.0f}{wh:>8.1f}{duty}")
+
+    # Cross-check the granularities. If 24 hourly buckets sum to the matching
+    # daily bucket, the numbers are at least internally consistent and we are
+    # misreading what they MEAN. If they don't, we are misreading their
+    # STRUCTURE -- a very different bug. Two extra requests.
+    print("\n=== Granularity cross-check ===")
+    by_day: dict[Any, float] = defaultdict(float)
+    for start, kwh in points:
+        by_day[start.date()] += kwh * 1000
+
+    for gran in ("daily", "monthly"):
+        try:
+            other = await api.get_consumption_history(device_id, gran)
+        except SchluterApiError as err:
+            print(f"  {gran}: unavailable ({err})")
+            continue
+        other_points = api.parse_consumption_history(other)
+        print(f"\n  {gran} (last 4 of {len(other_points)}):")
+        for start, kwh in other_points[-4:]:
+            wh = kwh * 1000
+            note = ""
+            if gran == "daily" and start.date() in by_day:
+                summed = by_day[start.date()]
+                ratio = wh / summed if summed else float("nan")
+                note = f"   <- hourly buckets for this day sum to {summed:.0f} (x{ratio:.2f})"
+            print(f"    {start.strftime('%Y-%m-%d %H:%M'):<22}{wh:>10.0f}{note}")
 
     if watts:
         print(
-            "\n'implied duty' is what the percentage MUST have averaged for the cloud's\n"
-            "watt-hours to be right. Whichever candidate above tracks that column is the\n"
-            "one the power sensor should multiply by. Sample a full hour (drop --probe)\n"
-            "to compare properly."
+            "\nRead this three ways:\n"
+            "  * If a candidate percentage tracks 'implied duty', that's the one to use.\n"
+            "  * If the daily bucket equals the sum of that day's hourly buckets, the\n"
+            "    figures are self-consistent and we're misreading their units/meaning.\n"
+            "  * If 'implied duty' stays high while the thermostat is plainly idle,\n"
+            "    'period' is not heating energy at all and the energy import is wrong.\n"
         )
     return raw
 
