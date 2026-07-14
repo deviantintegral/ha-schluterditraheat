@@ -308,22 +308,66 @@ async def compare_devices(api: SchluterApi, devices: dict[int, dict[str, Any]]) 
         )
 
 
+def save_samples(hourly: dict[datetime, list[dict[str, float | None]]], path: str) -> None:
+    """Persist samples so a scoring failure never costs another hour of sampling."""
+    payload = {hour.isoformat(): rows for hour, rows in hourly.items()}
+    with open(path, "w") as handle:
+        json.dump(payload, handle, indent=2)
+    print(f"\nSamples saved to {path}")
+    print(f"Score them later without re-sampling:  --score-from {path}")
+
+
+def load_samples(path: str) -> dict[datetime, list[dict[str, float | None]]]:
+    """Reload samples written by save_samples."""
+    with open(path) as handle:
+        payload = json.load(handle)
+    return {datetime.fromisoformat(hour): rows for hour, rows in payload.items()}
+
+
 async def score(
     api: SchluterApi,
     device_id: int,
     hourly: dict[datetime, list[dict[str, float | None]]],
+    wait_minutes: int = 150,
 ) -> None:
-    """Compare each candidate's predicted watt-hours against the cloud's actual."""
+    """Compare each candidate's predicted watt-hours against the cloud's actual.
+
+    The consumption endpoint lags: its newest bucket has been observed roughly
+    two hours behind the wall clock. So rather than sleeping a fixed interval and
+    hoping, poll until every sampled hour actually has a bucket, then score.
+    """
     if not hourly:
         print("\nNo complete hours were sampled -- nothing to score.")
         return
 
-    # The freshest bucket can still be partial on the cloud's side; give it a moment.
-    print("\nWaiting 5 minutes for the cloud to finalize the last hourly bucket...")
-    await asyncio.sleep(300)
+    actual: dict[datetime, float] = {}
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=wait_minutes)
 
-    consumption = await api.get_consumption_history(device_id, "hourly")
-    actual = {start: kwh * 1000 for start, kwh in api.parse_consumption_history(consumption)}
+    while True:
+        consumption = await api.get_consumption_history(device_id, "hourly")
+        actual = {
+            start: kwh * 1000 for start, kwh in api.parse_consumption_history(consumption)
+        }
+        missing = sorted(h for h in hourly if h not in actual)
+        if not missing:
+            break
+
+        newest = max(actual) if actual else None
+        if datetime.now(timezone.utc) >= deadline:
+            print(
+                f"\nGave up waiting for {len(missing)} bucket(s): "
+                f"{', '.join(f'{h:%H:%M}' for h in missing)}.\n"
+                f"The cloud's newest bucket is {newest:%Y-%m-%d %H:%M} UTC. Re-score later with\n"
+                f"--score-from once it catches up; the samples are already saved."
+            )
+            break
+
+        print(
+            f"\nCloud has not published {', '.join(f'{h:%H:%M}' for h in missing)} yet"
+            + (f" (newest bucket: {newest:%H:%M} UTC)" if newest else "")
+            + ". It lags ~2h; checking again in 10 minutes."
+        )
+        await asyncio.sleep(600)
 
     print("\n=== Predicted vs actual watt-hours ===")
     header = f"{'hour (UTC)':<18}{'n':>4}{'actual Wh':>11}{'implied %':>11}"
@@ -332,11 +376,13 @@ async def score(
     print(header)
 
     totals: dict[str, list[float]] = {name: [] for name in CANDIDATES}
+    unscored: list[datetime] = []
 
     for hour in sorted(hourly):
         rows = hourly[hour]
         if hour not in actual:
-            print(f"{hour:%m-%d %H:%M}  no cloud bucket for this hour -- skipped")
+            unscored.append(hour)
+            print(f"{hour:%m-%d %H:%M}  no cloud bucket published for this hour yet")
             continue
 
         watts = mean([r["load_watt"] for r in rows]) or 0.0
@@ -356,6 +402,27 @@ async def score(
         print(line)
 
     print("\n=== Verdict ===")
+
+    # A missing cloud bucket is not the same as missing samples. Say which it is:
+    # reporting "no usable data" when the floor ran flat out for an hour is a lie.
+    if unscored and not any(totals.values()):
+        for hour in unscored:
+            rows = hourly[hour]
+            summary = ", ".join(
+                f"{name}={mean([r[name] for r in rows])}" for name in CANDIDATES
+            )
+            watts = mean([r["load_watt"] for r in rows]) or 0.0
+            print(
+                f"  {hour:%m-%d %H:%M}  sampled fine ({len(rows)} samples: {summary}, "
+                f"load={watts:.0f} W)\n"
+                f"            but the cloud has not published this hour, so it cannot be scored."
+            )
+        print(
+            "\n  Nothing is wrong with the samples -- the consumption endpoint simply\n"
+            "  lags. Re-run with --score-from once it catches up."
+        )
+        return
+
     ranked = []
     for name in CANDIDATES:
         if totals[name]:
@@ -395,6 +462,16 @@ async def main() -> int:
     parser.add_argument("--interval", type=int, default=60, help="seconds between samples (default 60)")
     parser.add_argument("--hours", type=int, default=1, help="complete hours to sample (default 1)")
     parser.add_argument("--probe", action="store_true", help="dump one payload and exit; no sampling")
+    parser.add_argument(
+        "--samples",
+        default="power_samples.json",
+        help="where to save samples (default power_samples.json)",
+    )
+    parser.add_argument(
+        "--score-from",
+        metavar="FILE",
+        help="score samples saved by an earlier run instead of sampling again",
+    )
     args = parser.parse_args()
 
     username = os.environ.get("SCHLUTER_USERNAME") or input("Schluter username: ")
@@ -424,12 +501,22 @@ async def main() -> int:
         if len(devices) > 1:
             print(f"({len(devices)} thermostats on this account)")
 
+        # Scoring saved samples needs no probe and no sampling -- just the cloud.
+        if args.score_from:
+            hourly = load_samples(args.score_from)
+            print(f"Scoring {len(hourly)} saved hour(s) from {args.score_from}")
+            await score(api, device_id, hourly)
+            return 0
+
         await probe(api, device_id)
         await compare_devices(api, devices)
         if args.probe:
             return 0
 
         hourly = await sample(api, device_id, args.interval, args.hours)
+        # Save before scoring: the cloud lags, and an hour of sampling must not be
+        # lost just because its bucket has not been published yet.
+        save_samples(hourly, args.samples)
         await score(api, device_id, hourly)
 
     return 0
