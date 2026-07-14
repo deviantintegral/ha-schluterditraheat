@@ -386,6 +386,10 @@ async def score(
 
 
 async def main() -> int:
+    # A sampling run prints a line a minute for over an hour. Line-buffer stdout
+    # so that progress is still visible when the output is piped or redirected.
+    sys.stdout.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--device-id", type=int, help="default: the first thermostat found")
     parser.add_argument("--interval", type=int, default=60, help="seconds between samples (default 60)")
