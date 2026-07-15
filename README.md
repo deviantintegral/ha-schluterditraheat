@@ -54,6 +54,8 @@ In addition, each thermostat's hourly energy consumption is imported into Home A
 
 > **Note:** The thermostat reports energy per hour, not a continuously increasing meter reading, so energy appears as an Energy-dashboard statistic rather than a regular sensor entity. Add it via **Settings → Dashboards → Energy → Add consumption**, where it is listed as `Schluter DITRA-HEAT` energy for each thermostat.
 
+> **Use the imported statistic for energy, not the Power sensor.** The imported consumption is the accurate energy figure and the one to add to the Energy dashboard. Do **not** build energy from the Power sensor (for example with a Riemann-sum integration helper): the thermostat is polled roughly once a minute while the heating cable switches on and off on a much faster cycle, so an integration of those sparse samples will not match actual usage. The Power sensor is meant for live power draw and automations, not energy totals.
+
 ## Limitations
 
 This integration supports monitoring and basic control. The following are **not** currently supported:
