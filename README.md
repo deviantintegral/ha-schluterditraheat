@@ -47,7 +47,7 @@ Each thermostat creates the following entities, grouped under a single device:
 |--------|------|-------------|
 | Floor Heat | Climate | Temperature control and mode selection |
 | Heating Output | Sensor | Current heating output percentage (0–100%) |
-| Power | Sensor | Instantaneous power draw in watts (connected load × heating output) |
+| Power | Sensor | Instantaneous power draw in watts — full connected load while heating, 0 when idle (the cable switches on and off rather than modulating) |
 | GFCI Status | Binary Sensor | Ground fault detection (problem device class) |
 
 In addition, each thermostat's hourly energy consumption is imported into Home Assistant's long-term statistics (as an external statistic, in kWh) so it can be added to the **Energy dashboard**. The statistic refreshes hourly. On first setup, the roughly 24 hours of hourly history the cloud still holds is imported, so the dashboard is not starting from empty — but this is a short rolling window, not a full history: energy usage from before you installed the integration is not available.

@@ -110,11 +110,20 @@ class TestHeatingOutputSensor:
 class TestPowerSensor:
     """Test instantaneous power sensor entity."""
 
-    def test_native_value_is_load_times_output(self, coordinator):
-        """Test power is connected load scaled by heating output percent."""
+    def test_native_value_is_full_load_when_heating(self, coordinator):
+        """Test power is the full connected load whenever output > 0.
+
+        The cable switches rather than modulates, so any non-zero output means it
+        is drawing its whole load -- not the load scaled by the percentage.
+        """
         sensor = SchluterPowerSensor(coordinator, 40001)
-        # 264 W * 42% = 110.88 W
-        assert sensor.native_value == 110.9
+        assert sensor.native_value == 264.0
+
+    def test_native_value_full_load_regardless_of_percent(self, coordinator):
+        """Test a low output percentage still reports the full load, not a fraction."""
+        coordinator.data[40001]["heating_percent"] = 20
+        sensor = SchluterPowerSensor(coordinator, 40001)
+        assert sensor.native_value == 264.0
 
     def test_native_value_zero_when_idle(self, coordinator):
         """Test power is 0 when the thermostat is not calling for heat."""

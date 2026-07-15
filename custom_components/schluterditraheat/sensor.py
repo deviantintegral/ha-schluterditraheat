@@ -81,8 +81,18 @@ class SchluterPowerSensor(
 ):
     """Instantaneous power draw of a Schluter thermostat's heating load.
 
-    The thermostat reports its connected load (watts) and its current heating
-    output percentage; their product is the power currently being drawn.
+    The heating cable is resistive: it switches fully on or fully off, it does
+    not modulate. So the instantaneous draw is the whole connected load whenever
+    the thermostat is calling for heat, and zero otherwise -- not the load scaled
+    by the output percentage.
+
+    ``outputPercentDisplay`` is the duty cycle *target* for the current PWM
+    window, not a live power level: it reads 0 through the off phase of each
+    cycle and the target percentage while the cable conducts. Multiplying the
+    load by it therefore understates the real draw (validated against the cloud's
+    hourly consumption: on/off matched to ~2%, load x percent was off by ~60%).
+    The cloud consumption import, not a time-integral of this sensor, is the
+    authoritative energy figure for the Energy dashboard.
     """
 
     _attr_device_class = SensorDeviceClass.POWER
@@ -110,13 +120,13 @@ class SchluterPowerSensor(
 
     @property
     def native_value(self) -> float | None:
-        """Return the current power draw in watts."""
+        """Return the current power draw in watts (full load when heating, else 0)."""
         thermostat = self.coordinator.data.get(self._device_id)
         if thermostat is None:
             return None
         load_watt = thermostat.get("load_watt") or 0
         heating_percent = thermostat.get("heating_percent") or 0
-        return round(load_watt * heating_percent / 100, 1)
+        return float(load_watt) if heating_percent > 0 else 0.0
 
     @property
     def available(self) -> bool:
