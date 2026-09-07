@@ -355,3 +355,84 @@ class TestDailyLimitRecovery:
 
         assert coordinator.update_interval == SCAN_INTERVAL
         assert coordinator._backoff_interval is None
+
+
+class TestDailyLimitSharedPause:
+    """The daily cap must pause every API caller, not just the poll loop.
+
+    The energy import runs on its own timer (async_track_time_interval), so
+    without a shared flag it would keep calling the API hourly while the
+    coordinator sits paused on ACCDAYREQMAX.
+    """
+
+    async def test_flag_set_on_daily_limit(self, coordinator, mock_api):
+        """Test a daily-cap hit raises the shared flag."""
+        from custom_components.schluterditraheat.api import SchluterDailyLimitError
+
+        await coordinator._async_update_data()
+        assert coordinator.daily_limit_reached is False
+
+        mock_api.get_device_attributes_bulk.side_effect = SchluterDailyLimitError(
+            "cap"
+        )
+        with patch(
+            "custom_components.schluterditraheat._seconds_until_local_midnight",
+            return_value=3600.0,
+        ):
+            with pytest.raises(_UpdateFailed):
+                await coordinator._async_update_data()
+
+        assert coordinator.daily_limit_reached is True
+
+    async def test_flag_cleared_by_successful_poll(self, coordinator, mock_api):
+        """Test a later successful poll clears the flag and resumes energy."""
+        from custom_components.schluterditraheat.api import SchluterDailyLimitError
+
+        await coordinator._async_update_data()
+        mock_api.get_device_attributes_bulk.side_effect = SchluterDailyLimitError(
+            "cap"
+        )
+        with patch(
+            "custom_components.schluterditraheat._seconds_until_local_midnight",
+            return_value=3600.0,
+        ):
+            with pytest.raises(_UpdateFailed):
+                await coordinator._async_update_data()
+        assert coordinator.daily_limit_reached is True
+
+        # Cap lifted: next poll succeeds.
+        mock_api.get_device_attributes_bulk.side_effect = None
+        mock_api.get_device_attributes_bulk.return_value = MOCK_DYNAMIC_DATA
+        await coordinator._async_update_data()
+
+        assert coordinator.daily_limit_reached is False
+        assert coordinator.update_interval == SCAN_INTERVAL
+
+    async def test_note_daily_limit_pauses_polling(self, coordinator, mock_api):
+        """Test the energy import can trip the pause for the whole entry."""
+        await coordinator._async_update_data()
+        assert coordinator.daily_limit_reached is False
+
+        # Simulate the energy import hitting the cap first.
+        with patch(
+            "custom_components.schluterditraheat._seconds_until_local_midnight",
+            return_value=1800.0,
+        ):
+            seconds = coordinator.note_daily_limit()
+
+        assert seconds == 1800.0
+        assert coordinator.daily_limit_reached is True
+        assert coordinator.update_interval == timedelta(seconds=1800)
+
+    async def test_note_daily_limit_capped(self, coordinator, mock_api):
+        """Test the energy-triggered pause is capped like the poll path."""
+        from custom_components.schluterditraheat.const import DAILY_LIMIT_MAX_PAUSE
+
+        await coordinator._async_update_data()
+        with patch(
+            "custom_components.schluterditraheat._seconds_until_local_midnight",
+            return_value=36000.0,
+        ):
+            coordinator.note_daily_limit()
+
+        assert coordinator.update_interval == DAILY_LIMIT_MAX_PAUSE

@@ -14,6 +14,16 @@ API_TIMEOUT = 30
 # Update interval. Sinope (the RS1's backend OEM) asks integrators to poll no
 # faster than 300s; polling much faster risks the frequency-based session/login
 # limits. Do not exceed ~600s or the server session expires (USRSESSEXP).
+#
+# Source: the Neviweb community integration documents Sinope's ask
+# (https://github.com/claudegel/sinope-130 — scan_interval): "Sinope asked for a
+# minimum of 5 minutes between polling now so you can reduce scan_interval to
+# 300. Don't go over 600, the session will expire." That integration ships an
+# even more conservative 540s default.
+#
+# 300s means an app-side change can take up to 5 minutes to appear here. The
+# per-device Refresh button (button.py) exists so users can force a poll on
+# demand rather than making every install poll faster than Sinope asked.
 SCAN_INTERVAL = timedelta(seconds=300)
 
 # Energy statistics refresh interval (matches the cloud's hourly consumption buckets)
