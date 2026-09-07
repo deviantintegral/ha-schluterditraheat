@@ -13,7 +13,7 @@ Tested with the **DITRA-HEAT-E-RS1** thermostat. Other models using the same clo
 - **Climate entity** — control temperature and mode (Auto, Heat/Manual, Off) per thermostat, plus a frost protection preset
 - **Heating output sensor** — track heating output percentage with history graphs and long-term statistics
 - **Power sensor** — instantaneous power draw (watts) of the connected heating load
-- **Energy dashboard** — hourly energy consumption imported into long-term statistics, including backfilled history, for use in the Home Assistant Energy dashboard
+- **Energy dashboard** — hourly energy consumption imported into long-term statistics for use in the Home Assistant Energy dashboard
 - **GFCI fault sensor** — binary sensor for ground fault detection, enabling safety automations
 - **Wi-Fi signal sensor** — diagnostic sensor reporting signal strength in dBm
 - **Device metadata** — model, software and hardware version, and serial number on the device page
@@ -49,7 +49,7 @@ Each thermostat creates the following entities, grouped under a single device:
 |--------|------|-------------|
 | Floor Heat | Climate | Temperature control and mode selection |
 | Heating Output | Sensor | Current heating output percentage (0–100%) |
-| Power | Sensor | Instantaneous power draw in watts (connected load × heating output) |
+| Power | Sensor | Instantaneous power draw in watts — full connected load while heating, 0 when idle (the cable switches on and off rather than modulating) |
 | GFCI Status | Binary Sensor | Ground fault detection (problem device class) |
 | Wi-Fi Signal | Sensor | Signal strength in dBm (diagnostic) |
 
@@ -57,9 +57,11 @@ The device page also shows the model, software version, hardware version and ser
 
 The web app renders the same Wi-Fi reading as a five-level scale (amazing, very good, okay, weak, very weak). The API returns the underlying dBm value, which is what this integration exposes; use a template sensor if you want the bucketed wording.
 
-In addition, each thermostat's hourly energy consumption is imported into Home Assistant's long-term statistics (as an external statistic, in kWh) so it can be added to the **Energy dashboard**. When first set up, available historical hours are backfilled; the statistic then refreshes hourly.
+In addition, each thermostat's hourly energy consumption is imported into Home Assistant's long-term statistics (as an external statistic, in kWh) so it can be added to the **Energy dashboard**. The statistic refreshes hourly. On first setup, the roughly 24 hours of hourly history the cloud still holds is imported, so the dashboard is not starting from empty — but this is a short rolling window, not a full history: energy usage from before you installed the integration is not available.
 
 > **Note:** The thermostat reports energy per hour, not a continuously increasing meter reading, so energy appears as an Energy-dashboard statistic rather than a regular sensor entity. Add it via **Settings → Dashboards → Energy → Add consumption**, where it is listed as `Schluter DITRA-HEAT` energy for each thermostat.
+
+> **Use the imported statistic for energy, not the Power sensor.** The imported consumption is the accurate energy figure and the one to add to the Energy dashboard. Do **not** build energy from the Power sensor (for example with a Riemann-sum integration helper): the thermostat is polled roughly once a minute while the heating cable switches on and off on a much faster cycle, so an integration of those sparse samples will not match actual usage. The Power sensor is meant for live power draw and automations, not energy totals.
 
 ## Polling and rate limits
 
@@ -77,6 +79,7 @@ This integration supports monitoring and basic control. The following are **not*
 - Changing the air/floor sensor mode
 - Firmware updates
 - Adding or removing thermostats (requires reloading the integration)
+- Recovering energy history older than the cloud's rolling window — it serves only about the last 24 hours of hourly consumption, so if Home Assistant is offline for longer than that, the missed hours are lost and are simply absent from the Energy dashboard's totals
 
 ## Disclaimer
 

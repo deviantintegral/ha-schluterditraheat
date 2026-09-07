@@ -43,6 +43,8 @@ _HA_MODULES = [
     "homeassistant.components",
     "homeassistant.components.binary_sensor",
     "homeassistant.components.climate",
+    "homeassistant.components.recorder",
+    "homeassistant.components.recorder.statistics",
     "homeassistant.components.sensor",
     "homeassistant.config_entries",
     "homeassistant.const",
