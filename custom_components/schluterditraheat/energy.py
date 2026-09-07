@@ -44,6 +44,18 @@ async def async_update_energy_statistics(
     from homeassistant.const import UnitOfEnergy
     from homeassistant.util import dt as dt_util
 
+    # ``StatisticMeanType`` only exists from Home Assistant 2025.4. The manifest
+    # still declares 2024.1.0 as the minimum, so import it defensively rather
+    # than raising that floor. Older cores fall back to ``has_mean``; newer ones
+    # warn when ``mean_type`` is missing and stop accepting its absence in
+    # Home Assistant 2026.11.
+    try:
+        from homeassistant.components.recorder.models import StatisticMeanType
+
+        mean_type: Any | None = StatisticMeanType.NONE
+    except ImportError:  # Home Assistant < 2025.4
+        mean_type = None
+
     def _row_start(row: dict[str, Any]) -> Any:
         """Normalize a statistics row's start to a tz-aware datetime."""
         start = row.get("start")
@@ -96,7 +108,7 @@ async def async_update_energy_statistics(
         if not rows:
             continue
 
-        metadata = {
+        metadata: dict[str, Any] = {
             "has_mean": False,
             "has_sum": True,
             "name": f"{name} Energy",
@@ -104,6 +116,9 @@ async def async_update_energy_statistics(
             "statistic_id": statistic_id,
             "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
         }
+        if mean_type is not None:
+            # ``has_mean`` is False, so the equivalent mean type is NONE.
+            metadata["mean_type"] = mean_type
         async_add_external_statistics(hass, metadata, rows)
         _LOGGER.debug(
             "Imported %d energy statistics rows for %s (%s)",
